@@ -280,7 +280,7 @@ async def on_shutdown() -> None:
         await telegram_app.stop()
         await telegram_app.shutdown()
     except Exception as e:
-        logging.warning("Помилка під час shutdown: %s", e))
+        logging.warning("Помилка під час shutdown: %s", e)
 
 
 @app.get("/")
