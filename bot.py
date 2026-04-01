@@ -277,12 +277,10 @@ async def on_startup() -> None:
 @app.on_event("shutdown")
 async def on_shutdown() -> None:
     try:
-        if RENDER_EXTERNAL_URL:
-            await telegram_app.bot.delete_webhook()
         await telegram_app.stop()
         await telegram_app.shutdown()
     except Exception as e:
-        logging.warning("Помилка під час shutdown: %s", e)
+        logging.warning("Помилка під час shutdown: %s", e))
 
 
 @app.get("/")
