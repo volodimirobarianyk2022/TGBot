@@ -38,7 +38,7 @@ MAIN_KEYBOARD = ReplyKeyboardMarkup(
 )
 
 app = FastAPI()
-telegram_app = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
+telegram_app = Application.builder().token(TELEGRAM_BOT_TOKEN).updater(None).build()
 
 
 def np_request(model_name: str, called_method: str, method_properties: dict | None = None) -> dict:
