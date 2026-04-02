@@ -1,4 +1,5 @@
 import os
+import json
 import logging
 from datetime import datetime, timedelta
 
@@ -30,9 +31,10 @@ NP_API_URL = "https://api.novaposhta.ua/v2.0/json/"
 BTN_ALL = "Усі ТТН"
 BTN_ACTIVE = "Не доставлені"
 BTN_SEARCH = "Пошук по ТТН"
+BTN_JSON = "JSON по ТТН"
 
 MAIN_KEYBOARD = ReplyKeyboardMarkup(
-    [[BTN_ALL, BTN_ACTIVE], [BTN_SEARCH]],
+    [[BTN_ALL, BTN_ACTIVE], [BTN_SEARCH, BTN_JSON]],
     resize_keyboard=True
 )
 
@@ -95,25 +97,6 @@ def get_ttn_status(ttn: str) -> dict:
     return data[0]
 
 
-def get_counterparty_contact_persons(counterparty_ref: str) -> list[dict]:
-    if not counterparty_ref:
-        return []
-
-    response = np_request(
-        model_name="Counterparty",
-        called_method="getCounterpartyContactPersons",
-        method_properties={
-            "Ref": counterparty_ref,
-            "Page": "1"
-        }
-    )
-
-    if not response.get("success"):
-        return []
-
-    return response.get("data", []) or []
-
-
 def extract_ttn(doc: dict) -> str:
     return str(
         doc.get("IntDocNumber")
@@ -129,93 +112,6 @@ def extract_status(doc: dict) -> str:
         or doc.get("Status")
         or "Статус невідомий"
     ).strip()
-
-
-def extract_recipient_phone(doc: dict) -> str:
-    return str(
-        doc.get("PhoneRecipient")
-        or doc.get("RecipientsPhone")
-        or doc.get("RecipientPhone")
-        or "—"
-    ).strip()
-
-
-def extract_created_date(doc: dict) -> str:
-    return str(
-        doc.get("DateCreated")
-        or doc.get("DateTime")
-        or doc.get("Created")
-        or "—"
-    ).strip()
-
-
-def is_probably_uuid(value: str) -> bool:
-    s = str(value or "").strip().lower()
-    return len(s) == 36 and s.count("-") == 4
-
-
-def build_contact_full_name(contact: dict) -> str:
-    description = str(contact.get("Description") or "").strip()
-    if description:
-        return description
-
-    last_name = str(contact.get("LastName") or "").strip()
-    first_name = str(contact.get("FirstName") or "").strip()
-    middle_name = str(contact.get("MiddleName") or "").strip()
-
-    full_name = " ".join(part for part in [last_name, first_name, middle_name] if part).strip()
-    return full_name or "—"
-
-
-def resolve_recipient_name(doc: dict) -> str:
-    direct_name = str(
-        doc.get("CounterpartyRecipientDescription")
-        or doc.get("RecipientFullName")
-        or ""
-    ).strip()
-
-    if direct_name and direct_name != "—" and not is_probably_uuid(direct_name):
-        return direct_name
-
-    counterparty_ref = str(
-        doc.get("RecipientRef")
-        or doc.get("CounterpartyRecipientRef")
-        or doc.get("Recipient")
-        or ""
-    ).strip()
-
-    contact_ref = str(
-        doc.get("ContactRecipient")
-        or doc.get("RecipientContactPerson")
-        or ""
-    ).strip()
-
-    if counterparty_ref:
-        contacts = get_counterparty_contact_persons(counterparty_ref)
-
-        if contact_ref:
-            for contact in contacts:
-                if str(contact.get("Ref") or "").strip() == contact_ref:
-                    return build_contact_full_name(contact)
-
-        if contacts:
-            return build_contact_full_name(contacts[0])
-
-    return "—"
-
-
-def enrich_doc_with_status(doc: dict) -> dict:
-    ttn = extract_ttn(doc)
-    if not ttn:
-        return doc
-
-    try:
-        status_data = get_ttn_status(ttn)
-        merged = dict(doc)
-        merged.update(status_data)
-        return merged
-    except Exception:
-        return doc
 
 
 def is_delivered_status(status: str) -> bool:
@@ -262,46 +158,16 @@ def format_documents_list(docs: list[dict], title: str) -> str:
     for doc in docs:
         ttn = extract_ttn(doc)
         status = extract_status(doc)
-        recipient_name = resolve_recipient_name(doc)
-        recipient_phone = extract_recipient_phone(doc)
-        created_date = extract_created_date(doc)
 
-        lines.append(
-            f"ТТН: {ttn}\n"
-            f"Статус: {status}\n"
-            f"Отримувач: {recipient_name}\n"
-            f"Телефон: {recipient_phone}\n"
-            f"Створена: {created_date}\n"
-        )
+        lines.append(f"{ttn} — {status}")
 
     return "\n".join(lines)
 
 
-def format_ttn_info(ttn: str, data: dict) -> str:
-    recipient_name = resolve_recipient_name(data)
-    recipient_phone = extract_recipient_phone(data)
-    created_date = extract_created_date(data)
-
-    return (
-        f"ТТН: {ttn}\n"
-        f"Статус: {data.get('Status') or '—'}\n"
-        f"Отримувач: {recipient_name}\n"
-        f"Телефон отримувача: {recipient_phone}\n"
-        f"Дата створення ТТН: {created_date}\n"
-        f"Місто відправника: {data.get('CitySender') or '—'}\n"
-        f"Місто отримувача: {data.get('CityRecipient') or '—'}\n"
-        f"Відділення отримувача: {data.get('WarehouseRecipient') or '—'}\n"
-        f"Дата отримання: {data.get('RecipientDateTime') or '—'}\n"
-        f"Тип платника: {data.get('PayerType') or '—'}\n"
-        f"Післяплата: {data.get('AfterpaymentOnGoodsCost') or '—'}\n"
-        f"Кількість місць: {data.get('SeatsAmount') or '—'}\n"
-        f"Оголошена вартість: {data.get('AnnouncedPrice') or '—'}\n"
-        f"Вага: {data.get('DocumentWeight') or '—'}"
-    )
-
-
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     context.user_data["awaiting_ttn"] = False
+    context.user_data["awaiting_json"] = False
+
     await update.message.reply_text(
         "Бот готовий. Обери дію:",
         reply_markup=MAIN_KEYBOARD
@@ -310,11 +176,11 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 async def handle_all_ttns(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     context.user_data["awaiting_ttn"] = False
+    context.user_data["awaiting_json"] = False
 
     try:
         docs = get_documents_list(days=7)
-        enriched_docs = [enrich_doc_with_status(doc) for doc in docs]
-        text = format_documents_list(enriched_docs, "Усі ТТН за останні 7 днів:")
+        text = format_documents_list(docs, "Усі ТТН за останні 7 днів:")
         await send_long_message(update, text)
     except Exception as e:
         await update.message.reply_text(f"Помилка: {e}")
@@ -322,13 +188,13 @@ async def handle_all_ttns(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
 async def handle_active_ttns(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     context.user_data["awaiting_ttn"] = False
+    context.user_data["awaiting_json"] = False
 
     try:
         docs = get_documents_list(days=7)
-        enriched_docs = [enrich_doc_with_status(doc) for doc in docs]
-
         active_docs = []
-        for doc in enriched_docs:
+
+        for doc in docs:
             status = extract_status(doc)
             if not is_delivered_status(status):
                 active_docs.append(doc)
@@ -341,7 +207,14 @@ async def handle_active_ttns(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
 async def handle_search_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     context.user_data["awaiting_ttn"] = True
+    context.user_data["awaiting_json"] = False
     await update.message.reply_text("Відправ номер ТТН одним повідомленням.")
+
+
+async def handle_json_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    context.user_data["awaiting_json"] = True
+    context.user_data["awaiting_ttn"] = False
+    await update.message.reply_text("Відправ номер ТТН для отримання JSON.")
 
 
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -362,20 +235,61 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         await handle_search_button(update, context)
         return
 
-    if context.user_data.get("awaiting_ttn"):
+    if text == BTN_JSON:
+        await handle_json_button(update, context)
+        return
+
+    if context.user_data.get("awaiting_json"):
         ttn = "".join(ch for ch in text if ch.isdigit())
+
         if not ttn:
             await update.message.reply_text("Надішли коректний номер ТТН.")
             return
 
         try:
             data = get_ttn_status(ttn)
-            message = format_ttn_info(ttn, data)
+            json_text = json.dumps(data, ensure_ascii=False, indent=2)
+
+            for chunk in split_text(json_text, 3000):
+                await update.message.reply_text(
+                    f"```json\n{chunk}\n```",
+                    parse_mode="Markdown"
+                )
+        except Exception as e:
+            await update.message.reply_text(f"Помилка: {e}")
+        finally:
+            context.user_data["awaiting_json"] = False
+
+        return
+
+    if context.user_data.get("awaiting_ttn"):
+        ttn = "".join(ch for ch in text if ch.isdigit())
+
+        if not ttn:
+            await update.message.reply_text("Надішли коректний номер ТТН.")
+            return
+
+        try:
+            data = get_ttn_status(ttn)
+            message = (
+                f"ТТН: {ttn}\n"
+                f"Статус: {data.get('Status') or '—'}\n"
+                f"Місто відправника: {data.get('CitySender') or '—'}\n"
+                f"Місто отримувача: {data.get('CityRecipient') or '—'}\n"
+                f"Відділення отримувача: {data.get('WarehouseRecipient') or '—'}\n"
+                f"Дата отримання: {data.get('RecipientDateTime') or '—'}\n"
+                f"Тип платника: {data.get('PayerType') or '—'}\n"
+                f"Післяплата: {data.get('AfterpaymentOnGoodsCost') or '—'}\n"
+                f"Кількість місць: {data.get('SeatsAmount') or '—'}\n"
+                f"Оголошена вартість: {data.get('AnnouncedPrice') or '—'}\n"
+                f"Вага: {data.get('DocumentWeight') or '—'}"
+            )
             await update.message.reply_text(message)
         except Exception as e:
             await update.message.reply_text(f"Помилка: {e}")
         finally:
             context.user_data["awaiting_ttn"] = False
+
         return
 
     await update.message.reply_text("Обери кнопку з меню.", reply_markup=MAIN_KEYBOARD)
