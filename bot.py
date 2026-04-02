@@ -110,10 +110,8 @@ def extract_status(doc: dict) -> str:
 
 def extract_recipient_name(doc: dict) -> str:
     return str(
-        doc.get("RecipientFullName")
-        or doc.get("RecipientName")
-        or doc.get("ContactRecipient")
-        or doc.get("CounterpartyRecipientDescription")
+        doc.get("CounterpartyRecipientDescription")  # ✅ головне поле
+        or doc.get("RecipientFullName")
         or "—"
     ).strip()
 
