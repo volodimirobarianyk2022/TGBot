@@ -30,10 +30,9 @@ NP_API_URL = "https://api.novaposhta.ua/v2.0/json/"
 BTN_ALL = "Усі ТТН"
 BTN_ACTIVE = "Не доставлені"
 BTN_SEARCH = "Пошук по ТТН"
-BTN_CANCEL = "Скасувати"
 
 MAIN_KEYBOARD = ReplyKeyboardMarkup(
-    [[BTN_ALL, BTN_ACTIVE], [BTN_SEARCH, BTN_CANCEL]],
+    [[BTN_ALL, BTN_ACTIVE], [BTN_SEARCH]],
     resize_keyboard=True
 )
 
@@ -96,10 +95,45 @@ def get_ttn_status(ttn: str) -> dict:
     return data[0]
 
 
-def extract_ttn_and_status(doc: dict) -> tuple[str, str]:
-    ttn = doc.get("IntDocNumber") or doc.get("Number") or doc.get("DocumentNumber") or ""
-    status = doc.get("StateName") or doc.get("Status") or "Статус невідомий"
-    return str(ttn).strip(), str(status).strip()
+def extract_ttn(doc: dict) -> str:
+    return str(
+        doc.get("IntDocNumber")
+        or doc.get("Number")
+        or doc.get("DocumentNumber")
+        or ""
+    ).strip()
+
+
+def extract_status(doc: dict) -> str:
+    return str(doc.get("StateName") or doc.get("Status") or "Статус невідомий").strip()
+
+
+def extract_recipient_name(doc: dict) -> str:
+    return str(
+        doc.get("RecipientFullName")
+        or doc.get("RecipientName")
+        or doc.get("ContactRecipient")
+        or doc.get("CounterpartyRecipientDescription")
+        or "—"
+    ).strip()
+
+
+def extract_recipient_phone(doc: dict) -> str:
+    return str(
+        doc.get("PhoneRecipient")
+        or doc.get("RecipientsPhone")
+        or doc.get("RecipientPhone")
+        or "—"
+    ).strip()
+
+
+def extract_created_date(doc: dict) -> str:
+    return str(
+        doc.get("DateCreated")
+        or doc.get("DateTime")
+        or doc.get("Created")
+        or "—"
+    ).strip()
 
 
 def is_delivered_status(status: str) -> bool:
@@ -142,17 +176,36 @@ def format_documents_list(docs: list[dict], title: str) -> str:
         return f"{title}\n\nНічого не знайдено."
 
     lines = [title, ""]
+
     for doc in docs:
-        ttn, status = extract_ttn_and_status(doc)
-        lines.append(f"{ttn} — {status}")
+        ttn = extract_ttn(doc)
+        status = extract_status(doc)
+        recipient_name = extract_recipient_name(doc)
+        recipient_phone = extract_recipient_phone(doc)
+        created_date = extract_created_date(doc)
+
+        lines.append(
+            f"ТТН: {ttn}\n"
+            f"Статус: {status}\n"
+            f"Отримувач: {recipient_name}\n"
+            f"Телефон: {recipient_phone}\n"
+            f"Створена: {created_date}\n"
+        )
 
     return "\n".join(lines)
 
 
 def format_ttn_info(ttn: str, data: dict) -> str:
+    recipient_name = extract_recipient_name(data)
+    recipient_phone = extract_recipient_phone(data)
+    created_date = extract_created_date(data)
+
     return (
         f"ТТН: {ttn}\n"
         f"Статус: {data.get('Status') or '—'}\n"
+        f"Отримувач: {recipient_name}\n"
+        f"Телефон отримувача: {recipient_phone}\n"
+        f"Дата створення ТТН: {created_date}\n"
         f"Місто відправника: {data.get('CitySender') or '—'}\n"
         f"Місто отримувача: {data.get('CityRecipient') or '—'}\n"
         f"Відділення отримувача: {data.get('WarehouseRecipient') or '—'}\n"
@@ -192,7 +245,7 @@ async def handle_active_ttns(update: Update, context: ContextTypes.DEFAULT_TYPE)
         active_docs = []
 
         for doc in docs:
-            _, status = extract_ttn_and_status(doc)
+            status = extract_status(doc)
             if not is_delivered_status(status):
                 active_docs.append(doc)
 
@@ -205,11 +258,6 @@ async def handle_active_ttns(update: Update, context: ContextTypes.DEFAULT_TYPE)
 async def handle_search_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     context.user_data["awaiting_ttn"] = True
     await update.message.reply_text("Відправ номер ТТН одним повідомленням.")
-
-
-async def handle_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    context.user_data["awaiting_ttn"] = False
-    await update.message.reply_text("Скасовано.", reply_markup=MAIN_KEYBOARD)
 
 
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -228,10 +276,6 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 
     if text == BTN_SEARCH:
         await handle_search_button(update, context)
-        return
-
-    if text == BTN_CANCEL:
-        await handle_cancel(update, context)
         return
 
     if context.user_data.get("awaiting_ttn"):
