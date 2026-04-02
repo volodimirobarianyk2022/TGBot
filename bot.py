@@ -124,7 +124,11 @@ def extract_ttn(doc: dict) -> str:
 
 
 def extract_status(doc: dict) -> str:
-    return str(doc.get("StateName") or doc.get("Status") or "Статус невідомий").strip()
+    return str(
+        doc.get("StateName")
+        or doc.get("Status")
+        or "Статус невідомий"
+    ).strip()
 
 
 def extract_recipient_phone(doc: dict) -> str:
@@ -198,6 +202,20 @@ def resolve_recipient_name(doc: dict) -> str:
             return build_contact_full_name(contacts[0])
 
     return "—"
+
+
+def enrich_doc_with_status(doc: dict) -> dict:
+    ttn = extract_ttn(doc)
+    if not ttn:
+        return doc
+
+    try:
+        status_data = get_ttn_status(ttn)
+        merged = dict(doc)
+        merged.update(status_data)
+        return merged
+    except Exception:
+        return doc
 
 
 def is_delivered_status(status: str) -> bool:
@@ -295,7 +313,8 @@ async def handle_all_ttns(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
     try:
         docs = get_documents_list(days=7)
-        text = format_documents_list(docs, "Усі ТТН за останні 7 днів:")
+        enriched_docs = [enrich_doc_with_status(doc) for doc in docs]
+        text = format_documents_list(enriched_docs, "Усі ТТН за останні 7 днів:")
         await send_long_message(update, text)
     except Exception as e:
         await update.message.reply_text(f"Помилка: {e}")
@@ -306,9 +325,10 @@ async def handle_active_ttns(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
     try:
         docs = get_documents_list(days=7)
-        active_docs = []
+        enriched_docs = [enrich_doc_with_status(doc) for doc in docs]
 
-        for doc in docs:
+        active_docs = []
+        for doc in enriched_docs:
             status = extract_status(doc)
             if not is_delivered_status(status):
                 active_docs.append(doc)
