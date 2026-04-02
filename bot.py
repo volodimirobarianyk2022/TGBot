@@ -95,6 +95,25 @@ def get_ttn_status(ttn: str) -> dict:
     return data[0]
 
 
+def get_counterparty_contact_persons(counterparty_ref: str) -> list[dict]:
+    if not counterparty_ref:
+        return []
+
+    response = np_request(
+        model_name="Counterparty",
+        called_method="getCounterpartyContactPersons",
+        method_properties={
+            "Ref": counterparty_ref,
+            "Page": "1"
+        }
+    )
+
+    if not response.get("success"):
+        return []
+
+    return response.get("data", []) or []
+
+
 def extract_ttn(doc: dict) -> str:
     return str(
         doc.get("IntDocNumber")
@@ -106,14 +125,6 @@ def extract_ttn(doc: dict) -> str:
 
 def extract_status(doc: dict) -> str:
     return str(doc.get("StateName") or doc.get("Status") or "Статус невідомий").strip()
-
-
-def extract_recipient_name(doc: dict) -> str:
-    return str(
-        doc.get("CounterpartyRecipientDescription")  # ✅ головне поле
-        or doc.get("RecipientFullName")
-        or "—"
-    ).strip()
 
 
 def extract_recipient_phone(doc: dict) -> str:
@@ -132,6 +143,61 @@ def extract_created_date(doc: dict) -> str:
         or doc.get("Created")
         or "—"
     ).strip()
+
+
+def is_probably_uuid(value: str) -> bool:
+    s = str(value or "").strip().lower()
+    return len(s) == 36 and s.count("-") == 4
+
+
+def build_contact_full_name(contact: dict) -> str:
+    description = str(contact.get("Description") or "").strip()
+    if description:
+        return description
+
+    last_name = str(contact.get("LastName") or "").strip()
+    first_name = str(contact.get("FirstName") or "").strip()
+    middle_name = str(contact.get("MiddleName") or "").strip()
+
+    full_name = " ".join(part for part in [last_name, first_name, middle_name] if part).strip()
+    return full_name or "—"
+
+
+def resolve_recipient_name(doc: dict) -> str:
+    direct_name = str(
+        doc.get("CounterpartyRecipientDescription")
+        or doc.get("RecipientFullName")
+        or ""
+    ).strip()
+
+    if direct_name and direct_name != "—" and not is_probably_uuid(direct_name):
+        return direct_name
+
+    counterparty_ref = str(
+        doc.get("RecipientRef")
+        or doc.get("CounterpartyRecipientRef")
+        or doc.get("Recipient")
+        or ""
+    ).strip()
+
+    contact_ref = str(
+        doc.get("ContactRecipient")
+        or doc.get("RecipientContactPerson")
+        or ""
+    ).strip()
+
+    if counterparty_ref:
+        contacts = get_counterparty_contact_persons(counterparty_ref)
+
+        if contact_ref:
+            for contact in contacts:
+                if str(contact.get("Ref") or "").strip() == contact_ref:
+                    return build_contact_full_name(contact)
+
+        if contacts:
+            return build_contact_full_name(contacts[0])
+
+    return "—"
 
 
 def is_delivered_status(status: str) -> bool:
@@ -178,7 +244,7 @@ def format_documents_list(docs: list[dict], title: str) -> str:
     for doc in docs:
         ttn = extract_ttn(doc)
         status = extract_status(doc)
-        recipient_name = extract_recipient_name(doc)
+        recipient_name = resolve_recipient_name(doc)
         recipient_phone = extract_recipient_phone(doc)
         created_date = extract_created_date(doc)
 
@@ -194,7 +260,7 @@ def format_documents_list(docs: list[dict], title: str) -> str:
 
 
 def format_ttn_info(ttn: str, data: dict) -> str:
-    recipient_name = extract_recipient_name(data)
+    recipient_name = resolve_recipient_name(data)
     recipient_phone = extract_recipient_phone(data)
     created_date = extract_created_date(data)
 
