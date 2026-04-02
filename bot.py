@@ -41,6 +41,8 @@ MAIN_KEYBOARD = ReplyKeyboardMarkup(
 app = FastAPI()
 telegram_app = Application.builder().token(TELEGRAM_BOT_TOKEN).updater(None).build()
 
+LAST_UPDATE_ID = None
+
 
 def np_request(model_name: str, called_method: str, method_properties: dict | None = None) -> dict:
     payload = {
@@ -114,6 +116,33 @@ def extract_status(doc: dict) -> str:
     ).strip()
 
 
+def extract_recipient_name(doc: dict) -> str:
+    return str(
+        doc.get("RecipientFullName")
+        or doc.get("RecipientFullNameEW")
+        or doc.get("CounterpartyRecipientDescription")
+        or "—"
+    ).strip()
+
+
+def extract_recipient_phone(doc: dict) -> str:
+    return str(
+        doc.get("PhoneRecipient")
+        or doc.get("RecipientsPhone")
+        or doc.get("RecipientPhone")
+        or "—"
+    ).strip()
+
+
+def extract_created_date(doc: dict) -> str:
+    return str(
+        doc.get("DateCreated")
+        or doc.get("DateTime")
+        or doc.get("Created")
+        or "—"
+    ).strip()
+
+
 def is_delivered_status(status: str) -> bool:
     s = status.lower()
     return (
@@ -149,6 +178,21 @@ async def send_long_message(update: Update, text: str) -> None:
         await update.message.reply_text(chunk)
 
 
+def enrich_doc_with_status(doc: dict) -> dict:
+    ttn = extract_ttn(doc)
+    if not ttn:
+        return doc
+
+    try:
+        status_data = get_ttn_status(ttn)
+        merged = dict(doc)
+        merged.update(status_data)
+        return merged
+    except Exception as e:
+        logging.warning("Не вдалося оновити ТТН %s: %s", ttn, e)
+        return doc
+
+
 def format_documents_list(docs: list[dict], title: str) -> str:
     if not docs:
         return f"{title}\n\nНічого не знайдено."
@@ -158,10 +202,42 @@ def format_documents_list(docs: list[dict], title: str) -> str:
     for doc in docs:
         ttn = extract_ttn(doc)
         status = extract_status(doc)
+        recipient_name = extract_recipient_name(doc)
+        recipient_phone = extract_recipient_phone(doc)
+        created_date = extract_created_date(doc)
 
-        lines.append(f"{ttn} — {status}")
+        lines.append(
+            f"ТТН: {ttn}\n"
+            f"Статус: {status}\n"
+            f"Отримувач: {recipient_name}\n"
+            f"Телефон: {recipient_phone}\n"
+            f"Створена: {created_date}\n"
+        )
 
     return "\n".join(lines)
+
+
+def format_ttn_info(ttn: str, data: dict) -> str:
+    recipient_name = extract_recipient_name(data)
+    recipient_phone = extract_recipient_phone(data)
+    created_date = extract_created_date(data)
+
+    return (
+        f"ТТН: {ttn}\n"
+        f"Статус: {data.get('Status') or '—'}\n"
+        f"Отримувач: {recipient_name}\n"
+        f"Телефон отримувача: {recipient_phone}\n"
+        f"Дата створення ТТН: {created_date}\n"
+        f"Місто відправника: {data.get('CitySender') or '—'}\n"
+        f"Місто отримувача: {data.get('CityRecipient') or '—'}\n"
+        f"Відділення отримувача: {data.get('WarehouseRecipient') or '—'}\n"
+        f"Дата отримання: {data.get('RecipientDateTime') or '—'}\n"
+        f"Тип платника: {data.get('PayerType') or '—'}\n"
+        f"Післяплата: {data.get('AfterpaymentOnGoodsCost') or '—'}\n"
+        f"Кількість місць: {data.get('SeatsAmount') or '—'}\n"
+        f"Оголошена вартість: {data.get('AnnouncedPrice') or '—'}\n"
+        f"Вага: {data.get('DocumentWeight') or '—'}"
+    )
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -180,7 +256,8 @@ async def handle_all_ttns(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
     try:
         docs = get_documents_list(days=7)
-        text = format_documents_list(docs, "Усі ТТН за останні 7 днів:")
+        enriched_docs = [enrich_doc_with_status(doc) for doc in docs]
+        text = format_documents_list(enriched_docs, "Усі ТТН за останні 7 днів:")
         await send_long_message(update, text)
     except Exception as e:
         await update.message.reply_text(f"Помилка: {e}")
@@ -192,9 +269,10 @@ async def handle_active_ttns(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
     try:
         docs = get_documents_list(days=7)
-        active_docs = []
+        enriched_docs = [enrich_doc_with_status(doc) for doc in docs]
 
-        for doc in docs:
+        active_docs = []
+        for doc in enriched_docs:
             status = extract_status(doc)
             if not is_delivered_status(status):
                 active_docs.append(doc)
@@ -240,8 +318,9 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         return
 
     if context.user_data.get("awaiting_json"):
-        ttn = "".join(ch for ch in text if ch.isdigit())
+        context.user_data["awaiting_json"] = False
 
+        ttn = "".join(ch for ch in text if ch.isdigit())
         if not ttn:
             await update.message.reply_text("Надішли коректний номер ТТН.")
             return
@@ -250,45 +329,27 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             data = get_ttn_status(ttn)
             json_text = json.dumps(data, ensure_ascii=False, indent=2)
 
-            for chunk in split_text(json_text, 3000):
-                await update.message.reply_text(
-                    f"```json\n{chunk}\n```",
-                    parse_mode="Markdown"
-                )
+            for i, chunk in enumerate(split_text(json_text, 3000), start=1):
+                await update.message.reply_text(f"JSON частина {i}:\n{chunk}")
         except Exception as e:
             await update.message.reply_text(f"Помилка: {e}")
-        finally:
-            context.user_data["awaiting_json"] = False
 
         return
 
     if context.user_data.get("awaiting_ttn"):
-        ttn = "".join(ch for ch in text if ch.isdigit())
+        context.user_data["awaiting_ttn"] = False
 
+        ttn = "".join(ch for ch in text if ch.isdigit())
         if not ttn:
             await update.message.reply_text("Надішли коректний номер ТТН.")
             return
 
         try:
             data = get_ttn_status(ttn)
-            message = (
-                f"ТТН: {ttn}\n"
-                f"Статус: {data.get('Status') or '—'}\n"
-                f"Місто відправника: {data.get('CitySender') or '—'}\n"
-                f"Місто отримувача: {data.get('CityRecipient') or '—'}\n"
-                f"Відділення отримувача: {data.get('WarehouseRecipient') or '—'}\n"
-                f"Дата отримання: {data.get('RecipientDateTime') or '—'}\n"
-                f"Тип платника: {data.get('PayerType') or '—'}\n"
-                f"Післяплата: {data.get('AfterpaymentOnGoodsCost') or '—'}\n"
-                f"Кількість місць: {data.get('SeatsAmount') or '—'}\n"
-                f"Оголошена вартість: {data.get('AnnouncedPrice') or '—'}\n"
-                f"Вага: {data.get('DocumentWeight') or '—'}"
-            )
+            message = format_ttn_info(ttn, data)
             await update.message.reply_text(message)
         except Exception as e:
             await update.message.reply_text(f"Помилка: {e}")
-        finally:
-            context.user_data["awaiting_ttn"] = False
 
         return
 
@@ -332,7 +393,23 @@ async def root():
 
 @app.post("/webhook")
 async def telegram_webhook(request: Request):
+    global LAST_UPDATE_ID
+
     data = await request.json()
-    update = Update.de_json(data, telegram_app.bot)
-    await telegram_app.process_update(update)
-    return {"ok": True}
+    update_id = data.get("update_id")
+
+    logging.info("Webhook update_id=%s", update_id)
+
+    if update_id is not None and update_id == LAST_UPDATE_ID:
+        logging.info("Дубльований update_id=%s пропущено", update_id)
+        return {"ok": True, "duplicate": True}
+
+    LAST_UPDATE_ID = update_id
+
+    try:
+        update = Update.de_json(data, telegram_app.bot)
+        await telegram_app.process_update(update)
+        return {"ok": True}
+    except Exception as e:
+        logging.exception("Помилка обробки webhook: %s", e)
+        return {"ok": True, "error": str(e)}
