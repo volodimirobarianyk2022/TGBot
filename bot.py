@@ -1,5 +1,4 @@
 import os
-import json
 import logging
 from datetime import datetime, timedelta
 
@@ -28,13 +27,11 @@ RENDER_EXTERNAL_URL = os.getenv("RENDER_EXTERNAL_URL")
 
 NP_API_URL = "https://api.novaposhta.ua/v2.0/json/"
 
-BTN_ALL = "Усі ТТН"
 BTN_ACTIVE = "Не доставлені"
 BTN_SEARCH = "Пошук по ТТН"
-BTN_JSON = "JSON по ТТН"
 
 MAIN_KEYBOARD = ReplyKeyboardMarkup(
-    [[BTN_ALL, BTN_ACTIVE], [BTN_SEARCH, BTN_JSON]],
+    [[BTN_ACTIVE], [BTN_SEARCH]],
     resize_keyboard=True
 )
 
@@ -242,7 +239,6 @@ def format_ttn_info(ttn: str, data: dict) -> str:
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     context.user_data["awaiting_ttn"] = False
-    context.user_data["awaiting_json"] = False
 
     await update.message.reply_text(
         "Бот готовий. Обери дію:",
@@ -250,22 +246,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     )
 
 
-async def handle_all_ttns(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    context.user_data["awaiting_ttn"] = False
-    context.user_data["awaiting_json"] = False
-
-    try:
-        docs = get_documents_list(days=7)
-        enriched_docs = [enrich_doc_with_status(doc) for doc in docs]
-        text = format_documents_list(enriched_docs, "Усі ТТН за останні 7 днів:")
-        await send_long_message(update, text)
-    except Exception as e:
-        await update.message.reply_text(f"Помилка: {e}")
-
-
 async def handle_active_ttns(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     context.user_data["awaiting_ttn"] = False
-    context.user_data["awaiting_json"] = False
 
     try:
         docs = get_documents_list(days=7)
@@ -285,14 +267,7 @@ async def handle_active_ttns(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
 async def handle_search_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     context.user_data["awaiting_ttn"] = True
-    context.user_data["awaiting_json"] = False
     await update.message.reply_text("Відправ номер ТТН одним повідомленням.")
-
-
-async def handle_json_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    context.user_data["awaiting_json"] = True
-    context.user_data["awaiting_ttn"] = False
-    await update.message.reply_text("Відправ номер ТТН для отримання JSON.")
 
 
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -301,39 +276,12 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 
     text = (update.message.text or "").strip()
 
-    if text == BTN_ALL:
-        await handle_all_ttns(update, context)
-        return
-
     if text == BTN_ACTIVE:
         await handle_active_ttns(update, context)
         return
 
     if text == BTN_SEARCH:
         await handle_search_button(update, context)
-        return
-
-    if text == BTN_JSON:
-        await handle_json_button(update, context)
-        return
-
-    if context.user_data.get("awaiting_json"):
-        context.user_data["awaiting_json"] = False
-
-        ttn = "".join(ch for ch in text if ch.isdigit())
-        if not ttn:
-            await update.message.reply_text("Надішли коректний номер ТТН.")
-            return
-
-        try:
-            data = get_ttn_status(ttn)
-            json_text = json.dumps(data, ensure_ascii=False, indent=2)
-
-            for i, chunk in enumerate(split_text(json_text, 3000), start=1):
-                await update.message.reply_text(f"JSON частина {i}:\n{chunk}")
-        except Exception as e:
-            await update.message.reply_text(f"Помилка: {e}")
-
         return
 
     if context.user_data.get("awaiting_ttn"):
